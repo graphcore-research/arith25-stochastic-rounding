@@ -2,16 +2,16 @@
 # good for debugging and playing on macbooks and such
 
 out_dir = "out-shakespeare-char"
-eval_interval = 250  # keep frequent because we'll overfit
-eval_iters = 200
+eval_interval = 100  # keep frequent because we'll overfit
+eval_iters = 100
 log_interval = 10  # don't print too too often
 
 # we expect to overfit on this small dataset, so only save when val improves
 always_save_checkpoint = False
 
-wandb_log = False  # override via command line if you like
-wandb_project = "shakespeare-char"
-wandb_run_name = "mini-gpt"
+wandb_log = True  # override via command line if you like
+wandb_project = "shakespeare-char-2"
+wandb_run_name = "sr1"
 
 dataset = "shakespeare_char"
 gradient_accumulation_steps = 1

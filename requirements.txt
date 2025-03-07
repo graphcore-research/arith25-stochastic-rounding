@@ -1,0 +1,8 @@
+numpy
+transformers
+datasets
+tiktoken
+wandb
+tqdm
+-e gfloat/.
+-e awfutils/.

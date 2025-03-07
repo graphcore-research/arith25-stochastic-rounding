@@ -27,6 +27,11 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
+import awfutils
+import gfloat
+import gfloat.formats
+import re
+
 from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
@@ -34,6 +39,7 @@ from model import GPTConfig, GPT
 # I/O
 out_dir = "out"
 eval_interval = 2000
+eval_interval_early = 50
 log_interval = 1
 eval_iters = 200
 eval_only = False  # if True, script exits right after the first eval
@@ -76,8 +82,14 @@ dtype = (
     "bfloat16"
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     else "float16"
-)  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
+)
+gradscaler = False  # implement a GradScaler
 compile = True  # use PyTorch 2.0 to compile the model to be faster
+qat = ""  # quantization aware training dtype
+qat_rnd = "tne"  # rounding mode for QAT: tne, sr, srf, srff
+qat_srn = 8  # Number of SR bits
+qat_scale = 1.0
+seed = 1337  # random seed
 # -----------------------------------------------------------------------------
 config_keys = [
     k
@@ -103,6 +115,7 @@ if ddp:
     # down the desired gradient accumulation iterations per process proportionally
     assert gradient_accumulation_steps % ddp_world_size == 0
     gradient_accumulation_steps //= ddp_world_size
+    seed = 132767 + seed * ddp_world_size
 else:
     # if not ddp, we are running on a single gpu, and one process
     master_process = True
@@ -113,16 +126,31 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
-torch.manual_seed(1337 + seed_offset)
+torch.manual_seed(seed + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
 device_type = "cuda" if "cuda" in device else "cpu"  # for later use in torch.autocast
 # note: float16 data type will automatically use a GradScaler
-ptdtype = {
+dtype_str_to_pt = {
     "float32": torch.float32,
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
-}[dtype]
+}
+ptdtype = dtype_str_to_pt[dtype]
+
+if qat:
+    dtype_str_to_gfloat = {
+        "e5m2": gfloat.formats.format_info_ocp_e5m2,
+        "e4m3": gfloat.formats.format_info_ocp_e4m3,
+        "b8p6": gfloat.formats.format_info_p3109(8, 6),
+        "b8p5": gfloat.formats.format_info_p3109(8, 5),
+        "b8p4": gfloat.formats.format_info_p3109(8, 4),
+        "b8p3": gfloat.formats.format_info_p3109(8, 3),
+        "float16": gfloat.formats.format_info_binary16,
+        "bfloat16": gfloat.formats.format_info_bfloat16,
+    }
+    qat_dtype = dtype_str_to_gfloat[qat]
+
 ctx = (
     nullcontext()
     if device_type == "cpu"
@@ -234,7 +262,7 @@ if block_size < model.config.block_size:
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
-scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
+scaler = torch.amp.GradScaler("cuda", enabled=gradscaler)
 
 # optimizer
 optimizer = model.configure_optimizers(
@@ -291,7 +319,64 @@ def get_lr(it):
 if wandb_log and master_process:
     import wandb
 
-    wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+    wandb.init(
+        project=wandb_project, name=wandb_run_name, config=config, save_code=True
+    )
+
+    wandb.run.log_code(".")
+    # define our custom x axis metric
+    wandb.define_metric("iter")
+    wandb.define_metric("val/loss", summary="min", step_metric="iter")
+    wandb.define_metric("train/loss", summary="min", step_metric="iter")
+    wandb.define_metric("vals*", step_metric="iter")
+
+print(model)
+
+if qat:
+    print(f"Quantization Aware Training from {dtype} -> {qat}", end=",")
+    qat_rnd_mode = {
+        "sr": gfloat.RoundMode.Stochastic,
+        "srf": gfloat.RoundMode.StochasticFast,
+        "srff": gfloat.RoundMode.StochasticFastest,
+        "tne": gfloat.RoundMode.TiesToEven,
+    }[qat_rnd]
+    print(f" {qat_rnd_mode} with {qat_srn} SR bits")
+
+
+@torch.compile(dynamic=True)
+def round(v, scale=1.0):
+    srbits = torch.randint(0, 2**qat_srn, size=v.size(), device=v.device)
+    if scale == 0.0:
+        vmax = torch.max(v.abs().max(), torch.tensor(qat_dtype.smallest_normal * 16))
+        logscale = torch.floor(torch.log2(0.5 * qat_dtype.max / vmax))
+        # print('vmax={}, scale=2^{}'.format(vmax.item(), logscale.item()))
+        # logscale = torch.tensor(1.0) - 1
+        v32 = torch.ldexp(v.to(torch.float32), logscale)
+    else:
+        v32 = v.to(torch.float32) * scale
+
+    out = gfloat.round_ndarray(
+        qat_dtype,
+        v32,
+        sat=True,
+        rnd=qat_rnd_mode,
+        srnumbits=qat_srn,
+        srbits=srbits,
+        np=torch,
+    )
+    if scale == 0.0:
+        out = torch.ldexp(out, -logscale)
+    else:
+        out *= 1 / scale
+    # oorxx = (v > qat_dtype.max) | (v < qat_dtype.min) | v.isnan()
+    # if oor.sum() > 0:
+    #     print(f"round: OOR={oor.sum()}, #unique={out.unique().shape}")
+    #     breakpoint()
+
+    return out
+
+
+# torch.autograd.set_detect_anomaly(True, True)
 
 # training loop
 X, Y = get_batch("train")  # fetch the very first batch
@@ -306,9 +391,42 @@ while True:
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
+    # downcast weights
+    def should_quantize(p):
+        return p.dim() >= 2
+
+    if qat:
+        with torch.no_grad():
+            for p in model.parameters():
+                if should_quantize(p):
+                    p.data = round(p.data, qat_scale)
+
     # evaluate the loss on train/val sets and write checkpoints
-    if iter_num % eval_interval == 0 and master_process:
+    do_eval = (iter_num % eval_interval == 0) or (
+        (iter_num < eval_interval) and (iter_num % eval_interval_early == 0)
+    )
+    if do_eval and master_process:
         losses = estimate_loss()
+        awfutils.pt_print("model", model)
+
+        # next: try e3m4
+
+        if True:
+            vals = [
+                dict(
+                    val_lo=p.min(),
+                    val_hi=p.max(),
+                    val_nz=torch.numel(p) - torch.count_nonzero(p),
+                    nunique=torch.numel(torch.unique(p)),
+                )
+                for p in model.parameters()
+                if should_quantize(p)
+            ]
+            vals_lo = np.array([d["val_lo"].item() for d in vals])
+            vals_hi = np.array([d["val_hi"].item() for d in vals])
+            vals_nz = np.array([d["val_nz"].item() for d in vals])
+            nuniques = np.array([d["nunique"] for d in vals])
+
         print(
             f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
         )
@@ -320,8 +438,17 @@ while True:
                     "val/loss": losses["val"],
                     "lr": lr,
                     "mfu": running_mfu * 100,  # convert to percentage
+                    "vals_lo_min": vals_lo.min(),
+                    "vals_lo_max": vals_lo.max(),
+                    "vals_hi_min": vals_hi.min(),
+                    "vals_hi_max": vals_hi.max(),
+                    "vals_nz_min": vals_nz.min(),
+                    "vals_nz_max": vals_nz.max(),
+                    "nunique_min": nuniques.min(),
+                    "nunique_max": nuniques.max(),
                 }
             )
+
         if losses["val"] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses["val"]
             if iter_num > 0:
@@ -351,9 +478,8 @@ while True:
             )
         with ctx:
             logits, loss = model(X, Y)
-            loss = (
-                loss / gradient_accumulation_steps
-            )  # scale the loss to account for gradient accumulation
+            # scale the loss to account for gradient accumulation
+            loss = loss / gradient_accumulation_steps
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch("train")
         # backward pass, with gradient scaling if training in fp16

@@ -58,9 +58,8 @@ class CausalSelfAttention(nn.Module):
             )
 
     def forward(self, x):
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
+        # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = x.size()
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
@@ -87,11 +86,18 @@ class CausalSelfAttention(nn.Module):
             )
         else:
             # manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            scale = 1.0 / math.sqrt(k.size(-1))
+            # scale q before the matmul to avoid inf in float16
+            att = (q * scale) @ k.transpose(-2, -1)
             att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
+        # if y.isnan().any():
+        #     print("nan in y")
+        #     breakpoint()
+
         y = (
             y.transpose(1, 2).contiguous().view(B, T, C)
         )  # re-assemble all head outputs side by side

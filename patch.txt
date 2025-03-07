@@ -1,0 +1,1091 @@
+diff --git a/.gitignore b/.gitignore
+index cc343fe..af47993 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,5 +8,6 @@ __pycache__/
+ *.pt
+ *.pyc
+ input.txt
+-env/
+-venv/
+\ No newline at end of file
++.venv/
++wandb/
++sweeps/
+diff --git a/.gitmodules b/.gitmodules
+new file mode 100644
+index 0000000..b67058d
+--- /dev/null
++++ b/.gitmodules
+@@ -0,0 +1,6 @@
++[submodule "awfutils"]
++	path = awfutils
++	url = https://github.com/awf/awfutils
++[submodule "gfloat"]
++	path = gfloat
++	url = https://github.com/graphcore-research/gfloat-gc-fork
+diff --git a/awfutils b/awfutils
+new file mode 160000
+index 0000000..629f628
+--- /dev/null
++++ b/awfutils
+@@ -0,0 +1 @@
++Subproject commit 629f628cd8663d8bc5f59b6ffd108f64252bfa3e
+diff --git a/bench.py b/bench.py
+index 09d574a..2959323 100644
+--- a/bench.py
++++ b/bench.py
+@@ -1,6 +1,7 @@
+ """
+ A much shorter version of train.py for benchmarking
+ """
++
+ import os
+ from contextlib import nullcontext
+ import numpy as np
+@@ -14,33 +15,58 @@ block_size = 1024
+ bias = False
+ real_data = True
+ seed = 1337
+-device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
+-dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
+-compile = True # use PyTorch 2.0 to compile the model to be faster
+-profile = False # use pytorch profiler, or just simple benchmarking?
+-exec(open('configurator.py').read()) # overrides from command line or config file
++device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
++dtype = (
++    "bfloat16"
++    if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
++    else "float16"
++)  # 'float32' or 'bfloat16' or 'float16'
++compile = True  # use PyTorch 2.0 to compile the model to be faster
++profile = False  # use pytorch profiler, or just simple benchmarking?
++exec(open("configurator.py").read())  # overrides from command line or config file
+ # -----------------------------------------------------------------------------
+ 
+ torch.manual_seed(seed)
+ torch.cuda.manual_seed(seed)
+-torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
+-torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
+-device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
+-ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
+-ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
++torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
++torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
++device_type = "cuda" if "cuda" in device else "cpu"  # for later use in torch.autocast
++ptdtype = {
++    "float32": torch.float32,
++    "bfloat16": torch.bfloat16,
++    "float16": torch.float16,
++}[dtype]
++ctx = (
++    nullcontext()
++    if device_type == "cpu"
++    else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
++)
+ 
+ # data loading init
+ if real_data:
+-    dataset = 'openwebtext'
+-    data_dir = os.path.join('data', dataset)
+-    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
++    dataset = "openwebtext"
++    data_dir = os.path.join("data", dataset)
++    train_data = np.memmap(
++        os.path.join(data_dir, "train.bin"), dtype=np.uint16, mode="r"
++    )
++
+     def get_batch(split):
+-        data = train_data # note ignore split in benchmarking script
++        data = train_data  # note ignore split in benchmarking script
+         ix = torch.randint(len(data) - block_size, (batch_size,))
+-        x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
+-        y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+-        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
++        x = torch.stack(
++            [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
++        )
++        y = torch.stack(
++            [
++                torch.from_numpy((data[i + 1 : i + 1 + block_size]).astype(np.int64))
++                for i in ix
++            ]
++        )
++        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(
++            device, non_blocking=True
++        )
+         return x, y
++
+ else:
+     # alternatively, if fixed data is desired to not care about data loading
+     x = torch.randint(50304, (batch_size, block_size), device=device)
+@@ -49,19 +75,23 @@ else:
+ 
+ # model init
+ gptconf = GPTConfig(
+-    block_size = block_size, # how far back does the model look? i.e. context size
+-    n_layer = 12, n_head = 12, n_embd = 768, # size of the model
+-    dropout = 0, # for determinism
+-    bias = bias,
++    block_size=block_size,  # how far back does the model look? i.e. context size
++    n_layer=12,
++    n_head=12,
++    n_embd=768,  # size of the model
++    dropout=0,  # for determinism
++    bias=bias,
+ )
+ model = GPT(gptconf)
+ model.to(device)
+ 
+-optimizer = model.configure_optimizers(weight_decay=1e-2, learning_rate=1e-4, betas=(0.9, 0.95), device_type=device_type)
++optimizer = model.configure_optimizers(
++    weight_decay=1e-2, learning_rate=1e-4, betas=(0.9, 0.95), device_type=device_type
++)
+ 
+ if compile:
+     print("Compiling model...")
+-    model = torch.compile(model) # pytorch 2.0
++    model = torch.compile(model)  # pytorch 2.0
+ 
+ if profile:
+     # useful docs on pytorch profiler:
+@@ -70,40 +100,45 @@ if profile:
+     wait, warmup, active = 5, 5, 5
+     num_steps = wait + warmup + active
+     with torch.profiler.profile(
+-        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+-        schedule=torch.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=1),
+-        on_trace_ready=torch.profiler.tensorboard_trace_handler('./bench_log'),
++        activities=[
++            torch.profiler.ProfilerActivity.CPU,
++            torch.profiler.ProfilerActivity.CUDA,
++        ],
++        schedule=torch.profiler.schedule(
++            wait=wait, warmup=warmup, active=active, repeat=1
++        ),
++        on_trace_ready=torch.profiler.tensorboard_trace_handler("./bench_log"),
+         record_shapes=False,
+         profile_memory=False,
+-        with_stack=False, # incurs an additional overhead, disable if not needed
++        with_stack=False,  # incurs an additional overhead, disable if not needed
+         with_flops=True,
+-        with_modules=False, # only for torchscript models atm
++        with_modules=False,  # only for torchscript models atm
+     ) as prof:
+ 
+-        X, Y = get_batch('train')
++        X, Y = get_batch("train")
+         for k in range(num_steps):
+             with ctx:
+                 logits, loss = model(X, Y)
+-            X, Y = get_batch('train')
++            X, Y = get_batch("train")
+             optimizer.zero_grad(set_to_none=True)
+             loss.backward()
+             optimizer.step()
+             lossf = loss.item()
+             print(f"{k}/{num_steps} loss: {lossf:.4f}")
+ 
+-            prof.step() # notify the profiler at end of each step
++            prof.step()  # notify the profiler at end of each step
+ 
+ else:
+ 
+     # simple benchmarking
+     torch.cuda.synchronize()
+-    for stage, num_steps in enumerate([10, 20]): # burnin, then benchmark
++    for stage, num_steps in enumerate([10, 20]):  # burnin, then benchmark
+         t0 = time.time()
+-        X, Y = get_batch('train')
++        X, Y = get_batch("train")
+         for k in range(num_steps):
+             with ctx:
+                 logits, loss = model(X, Y)
+-            X, Y = get_batch('train')
++            X, Y = get_batch("train")
+             optimizer.zero_grad(set_to_none=True)
+             loss.backward()
+             optimizer.step()
+@@ -111,7 +146,7 @@ else:
+             print(f"{k}/{num_steps} loss: {lossf:.4f}")
+         torch.cuda.synchronize()
+         t1 = time.time()
+-        dt = t1-t0
++        dt = t1 - t0
+         mfu = model.estimate_mfu(batch_size * 1 * num_steps, dt)
+         if stage == 1:
+             print(f"time per iteration: {dt/num_steps*1000:.4f}ms, MFU: {mfu*100:.2f}%")
+diff --git a/config/eval_gpt2.py b/config/eval_gpt2.py
+index 53978cb..a5bb381 100644
+--- a/config/eval_gpt2.py
++++ b/config/eval_gpt2.py
+@@ -2,7 +2,7 @@
+ # n_layer=12, n_head=12, n_embd=768
+ # 124M parameters
+ batch_size = 8
+-eval_iters = 500 # use more iterations to get good estimate
++eval_iters = 500  # use more iterations to get good estimate
+ eval_only = True
+ wandb_log = False
+-init_from = 'gpt2'
++init_from = "gpt2"
+diff --git a/config/eval_gpt2_large.py b/config/eval_gpt2_large.py
+index 4cbeaef..ef7c9f0 100644
+--- a/config/eval_gpt2_large.py
++++ b/config/eval_gpt2_large.py
+@@ -2,7 +2,7 @@
+ # n_layer=36, n_head=20, n_embd=1280
+ # 774M parameters
+ batch_size = 8
+-eval_iters = 500 # use more iterations to get good estimate
++eval_iters = 500  # use more iterations to get good estimate
+ eval_only = True
+ wandb_log = False
+-init_from = 'gpt2-large'
++init_from = "gpt2-large"
+diff --git a/config/eval_gpt2_medium.py b/config/eval_gpt2_medium.py
+index 9d0db11..1e1c08e 100644
+--- a/config/eval_gpt2_medium.py
++++ b/config/eval_gpt2_medium.py
+@@ -2,7 +2,7 @@
+ # n_layer=24, n_head=16, n_embd=1024
+ # 350M parameters
+ batch_size = 8
+-eval_iters = 500 # use more iterations to get good estimate
++eval_iters = 500  # use more iterations to get good estimate
+ eval_only = True
+ wandb_log = False
+-init_from = 'gpt2-medium'
++init_from = "gpt2-medium"
+diff --git a/config/eval_gpt2_xl.py b/config/eval_gpt2_xl.py
+index 1bae34f..59238ae 100644
+--- a/config/eval_gpt2_xl.py
++++ b/config/eval_gpt2_xl.py
+@@ -2,7 +2,7 @@
+ # n_layer=48, n_head=25, n_embd=1600
+ # 1558M parameters
+ batch_size = 8
+-eval_iters = 500 # use more iterations to get good estimate
++eval_iters = 500  # use more iterations to get good estimate
+ eval_only = True
+ wandb_log = False
+-init_from = 'gpt2-xl'
++init_from = "gpt2-xl"
+diff --git a/config/finetune_shakespeare.py b/config/finetune_shakespeare.py
+index 148a4c4..bf16a58 100644
+--- a/config/finetune_shakespeare.py
++++ b/config/finetune_shakespeare.py
+@@ -1,14 +1,14 @@
+ import time
+ 
+-out_dir = 'out-shakespeare'
++out_dir = "out-shakespeare"
+ eval_interval = 5
+ eval_iters = 40
+-wandb_log = False # feel free to turn on
+-wandb_project = 'shakespeare'
+-wandb_run_name = 'ft-' + str(time.time())
++wandb_log = False  # feel free to turn on
++wandb_project = "shakespeare"
++wandb_run_name = "ft-" + str(time.time())
+ 
+-dataset = 'shakespeare'
+-init_from = 'gpt2-xl' # this is the largest GPT-2 model
++dataset = "shakespeare"
++init_from = "gpt2-xl"  # this is the largest GPT-2 model
+ 
+ # only save checkpoints if the validation loss improves
+ always_save_checkpoint = False
+diff --git a/config/qaft_gpt2.py b/config/qaft_gpt2.py
+new file mode 100644
+index 0000000..b14b058
+--- /dev/null
++++ b/config/qaft_gpt2.py
+@@ -0,0 +1,33 @@
++# config for training GPT-2 (124M) down to very nice loss of ~2.85 on 1 node of 8X A100 40GB
++# launch as the following (e.g. in a screen session) and wait ~5 days:
++# $ torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
++
++wandb_log = True
++wandb_project = "owt"
++wandb_run_name = "gpt2-medium"
++init_from = "gpt2-medium"
++
++
++# only save checkpoints if the validation loss improves
++always_save_checkpoint = False
++
++# these make the total batch size be ~0.5M
++# 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
++batch_size = 12
++block_size = 1024
++gradient_accumulation_steps = 5 * 8
++
++# this makes total number of tokens be 300B
++max_iters = 10000
++lr_decay_iters = 10000
++
++learning_rate = 3e-5
++decay_lr = False
++
++# eval stuff
++eval_interval = 500
++eval_iters = 200
++log_interval = 10
++
++# weight decay
++weight_decay = 1e-1
+diff --git a/config/train_gpt2.py b/config/train_gpt2.py
+index 8f19273..d651bff 100644
+--- a/config/train_gpt2.py
++++ b/config/train_gpt2.py
+@@ -3,8 +3,12 @@
+ # $ torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
+ 
+ wandb_log = True
+-wandb_project = 'owt'
+-wandb_run_name='gpt2-124M'
++wandb_project = "owt"
++wandb_run_name = "gpt2-f32ge"
++
++n_layer = 24
++n_head = 16
++n_embd = 1024
+ 
+ # these make the total batch size be ~0.5M
+ # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
+@@ -13,11 +17,14 @@ block_size = 1024
+ gradient_accumulation_steps = 5 * 8
+ 
+ # this makes total number of tokens be 300B
+-max_iters = 600000
+-lr_decay_iters = 600000
++max_iters = 30000
++lr_decay_iters = 30000
++
++learning_rate = 6e-4  # max learning rate
++min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+ 
+ # eval stuff
+-eval_interval = 1000
++eval_interval = 500
+ eval_iters = 200
+ log_interval = 10
+ 
+diff --git a/config/train_not_gpt2.py b/config/train_not_gpt2.py
+new file mode 100644
+index 0000000..00b8290
+--- /dev/null
++++ b/config/train_not_gpt2.py
+@@ -0,0 +1,25 @@
++# config for training GPT-2 (124M) down to very nice loss of ~2.85 on 1 node of 8X A100 40GB
++# launch as the following (e.g. in a screen session) and wait ~5 days:
++# $ torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
++
++wandb_log = True
++wandb_project = "owt"
++wandb_run_name = "gpt2-medium"  # old, wrong, name in wandb OWT project
++
++# these make the total batch size be ~0.5M
++# 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
++batch_size = 12
++block_size = 1024
++gradient_accumulation_steps = 5 * 8
++
++# this makes total number of tokens be 300B
++max_iters = 60000
++lr_decay_iters = 60000
++
++# eval stuff
++eval_interval = 500
++eval_iters = 200
++log_interval = 10
++
++# weight decay
++weight_decay = 1e-1
+diff --git a/config/train_shakespeare_char.py b/config/train_shakespeare_char.py
+index 41c81df..3842d1b 100644
+--- a/config/train_shakespeare_char.py
++++ b/config/train_shakespeare_char.py
+@@ -1,22 +1,22 @@
+ # train a miniature character-level shakespeare model
+ # good for debugging and playing on macbooks and such
+ 
+-out_dir = 'out-shakespeare-char'
+-eval_interval = 250 # keep frequent because we'll overfit
+-eval_iters = 200
+-log_interval = 10 # don't print too too often
++out_dir = "out-shakespeare-char"
++eval_interval = 100  # keep frequent because we'll overfit
++eval_iters = 100
++log_interval = 10  # don't print too too often
+ 
+ # we expect to overfit on this small dataset, so only save when val improves
+ always_save_checkpoint = False
+ 
+-wandb_log = False # override via command line if you like
+-wandb_project = 'shakespeare-char'
+-wandb_run_name = 'mini-gpt'
++wandb_log = True  # override via command line if you like
++wandb_project = "shakespeare-char-2"
++wandb_run_name = "sr1"
+ 
+-dataset = 'shakespeare_char'
++dataset = "shakespeare_char"
+ gradient_accumulation_steps = 1
+ batch_size = 64
+-block_size = 256 # context of up to 256 previous characters
++block_size = 256  # context of up to 256 previous characters
+ 
+ # baby GPT model :)
+ n_layer = 6
+@@ -24,13 +24,13 @@ n_head = 6
+ n_embd = 384
+ dropout = 0.2
+ 
+-learning_rate = 1e-3 # with baby networks can afford to go a bit higher
++learning_rate = 1e-3  # with baby networks can afford to go a bit higher
+ max_iters = 5000
+-lr_decay_iters = 5000 # make equal to max_iters usually
+-min_lr = 1e-4 # learning_rate / 10 usually
+-beta2 = 0.99 # make a bit bigger because number of tokens per iter is small
++lr_decay_iters = 5000  # make equal to max_iters usually
++min_lr = 1e-4  # learning_rate / 10 usually
++beta2 = 0.99  # make a bit bigger because number of tokens per iter is small
+ 
+-warmup_iters = 100 # not super necessary potentially
++warmup_iters = 100  # not super necessary potentially
+ 
+ # on macbook also add
+ # device = 'cpu'  # run on cpu only
+diff --git a/configurator.py b/configurator.py
+index a8bba95..eb7ad5f 100644
+--- a/configurator.py
++++ b/configurator.py
+@@ -18,9 +18,9 @@ import sys
+ from ast import literal_eval
+ 
+ for arg in sys.argv[1:]:
+-    if '=' not in arg:
++    if "=" not in arg:
+         # assume it's the name of a config file
+-        assert not arg.startswith('--')
++        assert not arg.startswith("--"), "Must be --key=Value, even for booleans"
+         config_file = arg
+         print(f"Overriding config with {config_file}:")
+         with open(config_file) as f:
+@@ -28,8 +28,8 @@ for arg in sys.argv[1:]:
+         exec(open(config_file).read())
+     else:
+         # assume it's a --key=value argument
+-        assert arg.startswith('--')
+-        key, val = arg.split('=')
++        assert arg.startswith("--"), "Must be --key=Value, even for booleans"
++        key, val = arg.split("=")
+         key = key[2:]
+         if key in globals():
+             try:
+diff --git a/data/openwebtext/prepare.py b/data/openwebtext/prepare.py
+index 2a9b975..bb65392 100644
+--- a/data/openwebtext/prepare.py
++++ b/data/openwebtext/prepare.py
+@@ -5,7 +5,7 @@ import os
+ from tqdm import tqdm
+ import numpy as np
+ import tiktoken
+-from datasets import load_dataset # huggingface datasets
++from datasets import load_dataset  # huggingface datasets
+ 
+ # number of workers in .map() call
+ # good number to use is ~order number of cpu cores // 2
+@@ -18,13 +18,15 @@ num_proc_load_dataset = num_proc
+ 
+ enc = tiktoken.get_encoding("gpt2")
+ 
+-if __name__ == '__main__':
++if __name__ == "__main__":
+     # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
+-    dataset = load_dataset("openwebtext", num_proc=num_proc_load_dataset)
++    dataset = load_dataset("openwebtext", num_proc=num_proc_load_dataset, trust_remote_code=True)
+ 
+     # owt by default only contains the 'train' split, so create a test split
+-    split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
+-    split_dataset['val'] = split_dataset.pop('test') # rename the test split to val
++    split_dataset = dataset["train"].train_test_split(
++        test_size=0.0005, seed=2357, shuffle=True
++    )
++    split_dataset["val"] = split_dataset.pop("test")  # rename the test split to val
+ 
+     # this results in:
+     # >>> split_dataset
+@@ -41,33 +43,37 @@ if __name__ == '__main__':
+ 
+     # we now want to tokenize the dataset. first define the encoding function (gpt2 bpe)
+     def process(example):
+-        ids = enc.encode_ordinary(example['text']) # encode_ordinary ignores any special tokens
+-        ids.append(enc.eot_token) # add the end of text token, e.g. 50256 for gpt2 bpe
++        ids = enc.encode_ordinary(
++            example["text"]
++        )  # encode_ordinary ignores any special tokens
++        ids.append(enc.eot_token)  # add the end of text token, e.g. 50256 for gpt2 bpe
+         # note: I think eot should be prepended not appended... hmm. it's called "eot" though...
+-        out = {'ids': ids, 'len': len(ids)}
++        out = {"ids": ids, "len": len(ids)}
+         return out
+ 
+     # tokenize the dataset
+     tokenized = split_dataset.map(
+         process,
+-        remove_columns=['text'],
++        remove_columns=["text"],
+         desc="tokenizing the splits",
+         num_proc=num_proc,
+     )
+ 
+     # concatenate all the ids in each dataset into one large file we can use for training
+     for split, dset in tokenized.items():
+-        arr_len = np.sum(dset['len'], dtype=np.uint64)
+-        filename = os.path.join(os.path.dirname(__file__), f'{split}.bin')
+-        dtype = np.uint16 # (can do since enc.max_token_value == 50256 is < 2**16)
+-        arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(arr_len,))
++        arr_len = np.sum(dset["len"], dtype=np.uint64)
++        filename = os.path.join(os.path.dirname(__file__), f"{split}.bin")
++        dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
++        arr = np.memmap(filename, dtype=dtype, mode="w+", shape=(arr_len,))
+         total_batches = 1024
+ 
+         idx = 0
+-        for batch_idx in tqdm(range(total_batches), desc=f'writing {filename}'):
++        for batch_idx in tqdm(range(total_batches), desc=f"writing {filename}"):
+             # Batch together samples for faster write
+-            batch = dset.shard(num_shards=total_batches, index=batch_idx, contiguous=True).with_format('numpy')
+-            arr_batch = np.concatenate(batch['ids'])
++            batch = dset.shard(
++                num_shards=total_batches, index=batch_idx, contiguous=True
++            ).with_format("numpy")
++            arr_batch = np.concatenate(batch["ids"])
+             # Write into mmap
+             arr[idx : idx + len(arr_batch)] = arr_batch
+             idx += len(arr_batch)
+diff --git a/data/shakespeare/prepare.py b/data/shakespeare/prepare.py
+index bda25b1..5d6bca4 100644
+--- a/data/shakespeare/prepare.py
++++ b/data/shakespeare/prepare.py
+@@ -4,17 +4,17 @@ import tiktoken
+ import numpy as np
+ 
+ # download the tiny shakespeare dataset
+-input_file_path = os.path.join(os.path.dirname(__file__), 'input.txt')
++input_file_path = os.path.join(os.path.dirname(__file__), "input.txt")
+ if not os.path.exists(input_file_path):
+-    data_url = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
+-    with open(input_file_path, 'w', encoding='utf-8') as f:
++    data_url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
++    with open(input_file_path, "w", encoding="utf-8") as f:
+         f.write(requests.get(data_url).text)
+ 
+-with open(input_file_path, 'r', encoding='utf-8') as f:
++with open(input_file_path, "r", encoding="utf-8") as f:
+     data = f.read()
+ n = len(data)
+-train_data = data[:int(n*0.9)]
+-val_data = data[int(n*0.9):]
++train_data = data[: int(n * 0.9)]
++val_data = data[int(n * 0.9) :]
+ 
+ # encode with tiktoken gpt2 bpe
+ enc = tiktoken.get_encoding("gpt2")
+@@ -26,8 +26,8 @@ print(f"val has {len(val_ids):,} tokens")
+ # export to bin files
+ train_ids = np.array(train_ids, dtype=np.uint16)
+ val_ids = np.array(val_ids, dtype=np.uint16)
+-train_ids.tofile(os.path.join(os.path.dirname(__file__), 'train.bin'))
+-val_ids.tofile(os.path.join(os.path.dirname(__file__), 'val.bin'))
++train_ids.tofile(os.path.join(os.path.dirname(__file__), "train.bin"))
++val_ids.tofile(os.path.join(os.path.dirname(__file__), "val.bin"))
+ 
+ # train.bin has 301,966 tokens
+ # val.bin has 36,059 tokens
+diff --git a/data/shakespeare_char/prepare.py b/data/shakespeare_char/prepare.py
+index 9fd1621..a4d2dec 100644
+--- a/data/shakespeare_char/prepare.py
++++ b/data/shakespeare_char/prepare.py
+@@ -4,40 +4,48 @@ So instead of encoding with GPT-2 BPE tokens, we just map characters to ints.
+ Will save train.bin, val.bin containing the ids, and meta.pkl containing the
+ encoder and decoder and some other related info.
+ """
++
+ import os
+ import pickle
+ import requests
+ import numpy as np
+ 
+ # download the tiny shakespeare dataset
+-input_file_path = os.path.join(os.path.dirname(__file__), 'input.txt')
++input_file_path = os.path.join(os.path.dirname(__file__), "input.txt")
+ if not os.path.exists(input_file_path):
+-    data_url = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
+-    with open(input_file_path, 'w') as f:
++    data_url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
++    with open(input_file_path, "w") as f:
+         f.write(requests.get(data_url).text)
+ 
+-with open(input_file_path, 'r') as f:
++with open(input_file_path, "r") as f:
+     data = f.read()
+ print(f"length of dataset in characters: {len(data):,}")
+ 
+ # get all the unique characters that occur in this text
+ chars = sorted(list(set(data)))
+ vocab_size = len(chars)
+-print("all the unique characters:", ''.join(chars))
++print("all the unique characters:", "".join(chars))
+ print(f"vocab size: {vocab_size:,}")
+ 
+ # create a mapping from characters to integers
+-stoi = { ch:i for i,ch in enumerate(chars) }
+-itos = { i:ch for i,ch in enumerate(chars) }
++stoi = {ch: i for i, ch in enumerate(chars)}
++itos = {i: ch for i, ch in enumerate(chars)}
++
++
+ def encode(s):
+-    return [stoi[c] for c in s] # encoder: take a string, output a list of integers
++    return [stoi[c] for c in s]  # encoder: take a string, output a list of integers
++
++
+ def decode(l):
+-    return ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
++    return "".join(
++        [itos[i] for i in l]
++    )  # decoder: take a list of integers, output a string
++
+ 
+ # create the train and test splits
+ n = len(data)
+-train_data = data[:int(n*0.9)]
+-val_data = data[int(n*0.9):]
++train_data = data[: int(n * 0.9)]
++val_data = data[int(n * 0.9) :]
+ 
+ # encode both to integers
+ train_ids = encode(train_data)
+@@ -48,16 +56,16 @@ print(f"val has {len(val_ids):,} tokens")
+ # export to bin files
+ train_ids = np.array(train_ids, dtype=np.uint16)
+ val_ids = np.array(val_ids, dtype=np.uint16)
+-train_ids.tofile(os.path.join(os.path.dirname(__file__), 'train.bin'))
+-val_ids.tofile(os.path.join(os.path.dirname(__file__), 'val.bin'))
++train_ids.tofile(os.path.join(os.path.dirname(__file__), "train.bin"))
++val_ids.tofile(os.path.join(os.path.dirname(__file__), "val.bin"))
+ 
+ # save the meta information as well, to help us encode/decode later
+ meta = {
+-    'vocab_size': vocab_size,
+-    'itos': itos,
+-    'stoi': stoi,
++    "vocab_size": vocab_size,
++    "itos": itos,
++    "stoi": stoi,
+ }
+-with open(os.path.join(os.path.dirname(__file__), 'meta.pkl'), 'wb') as f:
++with open(os.path.join(os.path.dirname(__file__), "meta.pkl"), "wb") as f:
+     pickle.dump(meta, f)
+ 
+ # length of dataset in characters:  1115394
+diff --git a/gfloat b/gfloat
+new file mode 160000
+index 0000000..4bc8e60
+--- /dev/null
++++ b/gfloat
+@@ -0,0 +1 @@
++Subproject commit 4bc8e6069ac28ef13909969de05b393be4f33412
+diff --git a/model.py b/model.py
+index c698f8b..a70ea86 100644
+--- a/model.py
++++ b/model.py
+@@ -15,8 +15,9 @@ import torch
+ import torch.nn as nn
+ from torch.nn import functional as F
+ 
++
+ class LayerNorm(nn.Module):
+-    """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
++    """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
+ 
+     def __init__(self, ndim, bias):
+         super().__init__()
+@@ -26,6 +27,7 @@ class LayerNorm(nn.Module):
+     def forward(self, input):
+         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+ 
++
+ class CausalSelfAttention(nn.Module):
+ 
+     def __init__(self, config):
+@@ -42,46 +44,76 @@ class CausalSelfAttention(nn.Module):
+         self.n_embd = config.n_embd
+         self.dropout = config.dropout
+         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
++        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+         if not self.flash:
+-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
++            print(
++                "WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0"
++            )
+             # causal mask to ensure that attention is only applied to the left in the input sequence
+-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+-                                        .view(1, 1, config.block_size, config.block_size))
++            self.register_buffer(
++                "bias",
++                torch.tril(torch.ones(config.block_size, config.block_size)).view(
++                    1, 1, config.block_size, config.block_size
++                ),
++            )
+ 
+     def forward(self, x):
+-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
++        # batch size, sequence length, embedding dimensionality (n_embd)
++        B, T, C = x.size()
+ 
+         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
++        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
++        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
++            1, 2
++        )  # (B, nh, T, hs)
++        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
++            1, 2
++        )  # (B, nh, T, hs)
++        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
++            1, 2
++        )  # (B, nh, T, hs)
+ 
+         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+         if self.flash:
+             # efficient attention using Flash Attention CUDA kernels
+-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
++            y = torch.nn.functional.scaled_dot_product_attention(
++                q,
++                k,
++                v,
++                attn_mask=None,
++                dropout_p=self.dropout if self.training else 0,
++                is_causal=True,
++            )
+         else:
+             # manual implementation of attention
+-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
++            scale = 1.0 / math.sqrt(k.size(-1))
++            # scale q before the matmul to avoid inf in float16
++            att = (q * scale) @ k.transpose(-2, -1)
++            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+             att = F.softmax(att, dim=-1)
+             att = self.attn_dropout(att)
+-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
++            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
++
++        # if y.isnan().any():
++        #     print("nan in y")
++        #     breakpoint()
++
++        y = (
++            y.transpose(1, 2).contiguous().view(B, T, C)
++        )  # re-assemble all head outputs side by side
+ 
+         # output projection
+         y = self.resid_dropout(self.c_proj(y))
+         return y
+ 
++
+ class MLP(nn.Module):
+ 
+     def __init__(self, config):
+         super().__init__()
+-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+-        self.gelu    = nn.GELU()
+-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
++        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
++        self.gelu = nn.GELU()
++        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+         self.dropout = nn.Dropout(config.dropout)
+ 
+     def forward(self, x):
+@@ -91,6 +123,7 @@ class MLP(nn.Module):
+         x = self.dropout(x)
+         return x
+ 
++
+ class Block(nn.Module):
+ 
+     def __init__(self, config):
+@@ -105,15 +138,21 @@ class Block(nn.Module):
+         x = x + self.mlp(self.ln_2(x))
+         return x
+ 
++
+ @dataclass
+ class GPTConfig:
+     block_size: int = 1024
+-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
++    vocab_size: int = (
++        50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
++    )
+     n_layer: int = 12
+     n_head: int = 12
+     n_embd: int = 768
+     dropout: float = 0.0
+-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
++    bias: bool = (
++        True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
++    )
++
+ 
+ class GPT(nn.Module):
+ 
+@@ -123,29 +162,35 @@ class GPT(nn.Module):
+         assert config.block_size is not None
+         self.config = config
+ 
+-        self.transformer = nn.ModuleDict(dict(
+-            wte = nn.Embedding(config.vocab_size, config.n_embd),
+-            wpe = nn.Embedding(config.block_size, config.n_embd),
+-            drop = nn.Dropout(config.dropout),
+-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+-            ln_f = LayerNorm(config.n_embd, bias=config.bias),
+-        ))
++        self.transformer = nn.ModuleDict(
++            dict(
++                wte=nn.Embedding(config.vocab_size, config.n_embd),
++                wpe=nn.Embedding(config.block_size, config.n_embd),
++                drop=nn.Dropout(config.dropout),
++                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
++                ln_f=LayerNorm(config.n_embd, bias=config.bias),
++            )
++        )
+         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+         # with weight tying when using torch.compile() some warnings get generated:
+         # "UserWarning: functional_call was passed multiple values for tied weights.
+         # This behavior is deprecated and will be an error in future versions"
+         # not 100% sure what this is, so far seems to be harmless. TODO investigate
+-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
++        self.transformer.wte.weight = (
++            self.lm_head.weight
++        )  # https://paperswithcode.com/method/weight-tying
+ 
+         # init all weights
+         self.apply(self._init_weights)
+         # apply special scaled init to the residual projections, per GPT-2 paper
+         for pn, p in self.named_parameters():
+-            if pn.endswith('c_proj.weight'):
+-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
++            if pn.endswith("c_proj.weight"):
++                torch.nn.init.normal_(
++                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
++                )
+ 
+         # report number of parameters
+-        print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
++        print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
+ 
+     def get_num_params(self, non_embedding=True):
+         """
+@@ -170,12 +215,14 @@ class GPT(nn.Module):
+     def forward(self, idx, targets=None):
+         device = idx.device
+         b, t = idx.size()
+-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
++        assert (
++            t <= self.config.block_size
++        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
++        pos = torch.arange(0, t, dtype=torch.long, device=device)  # shape (t)
+ 
+         # forward the GPT model itself
+-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
++        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
++        pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
+         x = self.transformer.drop(tok_emb + pos_emb)
+         for block in self.transformer.h:
+             x = block(x)
+@@ -184,10 +231,14 @@ class GPT(nn.Module):
+         if targets is not None:
+             # if we are given some desired targets also calculate the loss
+             logits = self.lm_head(x)
+-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
++            loss = F.cross_entropy(
++                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
++            )
+         else:
+             # inference-time mini-optimization: only forward the lm_head on the very last position
+-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
++            logits = self.lm_head(
++                x[:, [-1], :]
++            )  # note: using list [-1] to preserve the time dim
+             loss = None
+ 
+         return logits, loss
+@@ -198,41 +249,46 @@ class GPT(nn.Module):
+         # but want to use a smaller block size for some smaller, simpler model
+         assert block_size <= self.config.block_size
+         self.config.block_size = block_size
+-        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
++        self.transformer.wpe.weight = nn.Parameter(
++            self.transformer.wpe.weight[:block_size]
++        )
+         for block in self.transformer.h:
+-            if hasattr(block.attn, 'bias'):
+-                block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
++            if hasattr(block.attn, "bias"):
++                block.attn.bias = block.attn.bias[:, :, :block_size, :block_size]
+ 
+     @classmethod
+     def from_pretrained(cls, model_type, override_args=None):
+-        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+-        override_args = override_args or {} # default to empty dict
++        assert model_type in {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"}
++        override_args = override_args or {}  # default to empty dict
+         # only dropout can be overridden see more notes below
+-        assert all(k == 'dropout' for k in override_args)
++        assert all(k == "dropout" for k in override_args)
+         from transformers import GPT2LMHeadModel
++
+         print("loading weights from pretrained gpt: %s" % model_type)
+ 
+         # n_layer, n_head and n_embd are determined from model_type
+         config_args = {
+-            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
+-            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024), # 350M params
+-            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280), # 774M params
+-            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
++            "gpt2": dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
++            "gpt2-medium": dict(n_layer=24, n_head=16, n_embd=1024),  # 350M params
++            "gpt2-large": dict(n_layer=36, n_head=20, n_embd=1280),  # 774M params
++            "gpt2-xl": dict(n_layer=48, n_head=25, n_embd=1600),  # 1558M params
+         }[model_type]
+         print("forcing vocab_size=50257, block_size=1024, bias=True")
+-        config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
+-        config_args['block_size'] = 1024 # always 1024 for GPT model checkpoints
+-        config_args['bias'] = True # always True for GPT model checkpoints
++        config_args["vocab_size"] = 50257  # always 50257 for GPT model checkpoints
++        config_args["block_size"] = 1024  # always 1024 for GPT model checkpoints
++        config_args["bias"] = True  # always True for GPT model checkpoints
+         # we can override the dropout rate, if desired
+-        if 'dropout' in override_args:
++        if "dropout" in override_args:
+             print(f"overriding dropout rate to {override_args['dropout']}")
+-            config_args['dropout'] = override_args['dropout']
++            config_args["dropout"] = override_args["dropout"]
+         # create a from-scratch initialized minGPT model
+         config = GPTConfig(**config_args)
+         model = GPT(config)
+         sd = model.state_dict()
+         sd_keys = sd.keys()
+-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
++        sd_keys = [
++            k for k in sd_keys if not k.endswith(".attn.bias")
++        ]  # discard this mask / buffer, not a param
+ 
+         # init a huggingface/transformers model
+         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+@@ -240,12 +296,23 @@ class GPT(nn.Module):
+ 
+         # copy while ensuring all of the parameters are aligned and match in names and shapes
+         sd_keys_hf = sd_hf.keys()
+-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
+-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask (buffer)
+-        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
++        sd_keys_hf = [
++            k for k in sd_keys_hf if not k.endswith(".attn.masked_bias")
++        ]  # ignore these, just a buffer
++        sd_keys_hf = [
++            k for k in sd_keys_hf if not k.endswith(".attn.bias")
++        ]  # same, just the mask (buffer)
++        transposed = [
++            "attn.c_attn.weight",
++            "attn.c_proj.weight",
++            "mlp.c_fc.weight",
++            "mlp.c_proj.weight",
++        ]
+         # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
+         # this means that we have to transpose these weights when we import them
+-        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
++        assert len(sd_keys_hf) == len(
++            sd_keys
++        ), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
+         for k in sd_keys_hf:
+             if any(k.endswith(w) for w in transposed):
+                 # special treatment for the Conv1D weights we need to transpose
+@@ -270,35 +337,41 @@ class GPT(nn.Module):
+         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+         optim_groups = [
+-            {'params': decay_params, 'weight_decay': weight_decay},
+-            {'params': nodecay_params, 'weight_decay': 0.0}
++            {"params": decay_params, "weight_decay": weight_decay},
++            {"params": nodecay_params, "weight_decay": 0.0},
+         ]
+         num_decay_params = sum(p.numel() for p in decay_params)
+         num_nodecay_params = sum(p.numel() for p in nodecay_params)
+-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
++        print(
++            f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
++        )
++        print(
++            f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
++        )
+         # Create AdamW optimizer and use the fused version if it is available
+-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+-        use_fused = fused_available and device_type == 'cuda'
++        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
++        use_fused = fused_available and device_type == "cuda"
+         extra_args = dict(fused=True) if use_fused else dict()
+-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
++        optimizer = torch.optim.AdamW(
++            optim_groups, lr=learning_rate, betas=betas, **extra_args
++        )
+         print(f"using fused AdamW: {use_fused}")
+ 
+         return optimizer
+ 
+     def estimate_mfu(self, fwdbwd_per_iter, dt):
+-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
++        """estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS"""
+         # first estimate the number of flops we do per iteration.
+         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
+         N = self.get_num_params()
+         cfg = self.config
+-        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
+-        flops_per_token = 6*N + 12*L*H*Q*T
++        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd // cfg.n_head, cfg.block_size
++        flops_per_token = 6 * N + 12 * L * H * Q * T
+         flops_per_fwdbwd = flops_per_token * T
+         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
+         # express our flops throughput as ratio of A100 bfloat16 peak flops
+-        flops_achieved = flops_per_iter * (1.0/dt) # per second
+-        flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
++        flops_achieved = flops_per_iter * (1.0 / dt)  # per second
++        flops_promised = 312e12  # A100 GPU bfloat16 peak flops is 312 TFLOPS
+         mfu = flops_achieved / flops_promised
+         return mfu
+ 
+@@ -311,7 +384,11 @@ class GPT(nn.Module):
+         """
+         for _ in range(max_new_tokens):
+             # if the sequence context is growing too long we must crop it at block_size
+-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
++            idx_cond = (
++                idx
++                if idx.size(1) <= self.config.block_size
++                else idx[:, -self.config.block_size :]
++            )
+             # forward the model to get the logits for the index in the sequence
+             logits

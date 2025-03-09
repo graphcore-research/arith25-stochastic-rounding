@@ -356,13 +356,7 @@ def round(v, scale=1.0):
         v32 = v.to(torch.float32) * scale
 
     out = gfloat.round_ndarray(
-        qat_dtype,
-        v32,
-        sat=True,
-        rnd=qat_rnd_mode,
-        srnumbits=qat_srn,
-        srbits=srbits,
-        np=torch,
+        qat_dtype, v32, sat=True, rnd=qat_rnd_mode, srnumbits=qat_srn, srbits=srbits
     )
     if scale == 0.0:
         out = torch.ldexp(out, -logscale)

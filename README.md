@@ -7,13 +7,14 @@ The original nanoGPT readme is in [README-nanoGPT](README-nanoGPT.md).
 
 # Installation
 
-First set up by following README-nanoGPT.
+First set up by following README-nanoGPT, up to the point where training fails because you haven't installed `awfutils`.
 
 Then install the gfloat and awfutils packages:
 ```
 pip install git+https://github.com/awf/awfutils@7e99007
-pip install git+https://github.com/graphcore-research/gfloat@c332c01
+pip install git+https://github.com/graphcore-research/gfloat@9c31e1d
 ```
+There is also a "pip frozen" ``requirements-frozen.txt``, which is supplied for reference, for anyone trying to exactly duplicate the conditions of the paper, but for the most part, an up-to-date pytorch and gfloat should work.
 
 At this point, a basic command such as
 ```
@@ -35,6 +36,12 @@ python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --q
 python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=sr  # Called "SRC" in the paper
 python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=srf
 python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=srff
+```
+
+And to do so including uncertainties, and bfloat16, use MkSweep:
+```
+python sweep.py sweeps
+make -f sweeps/Makefile
 ```
 
 To regenerate figure 4, run

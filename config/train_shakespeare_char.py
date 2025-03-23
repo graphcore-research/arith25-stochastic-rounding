@@ -10,8 +10,8 @@ log_interval = 10  # don't print too too often
 always_save_checkpoint = False
 
 wandb_log = True  # override via command line if you like
-wandb_project = "shakespeare-char-2"
-wandb_run_name = "sr1"
+wandb_project = "arith-sr"
+wandb_run_name = "shakespeare-char"
 
 dataset = "shakespeare_char"
 gradient_accumulation_steps = 1

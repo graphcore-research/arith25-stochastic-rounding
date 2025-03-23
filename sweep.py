@@ -9,8 +9,6 @@ with MkSweep(sweepdir) as ms:
 
     defaults = dict(
         dtype="bfloat16",
-        wandb_run_name="sr-f16-tiny-b",
-        qat="b8p4",
     )
 
     ms.add(cmd, defaults, qat="bfloat16")
@@ -24,6 +22,7 @@ with MkSweep(sweepdir) as ms:
                     cmd,
                     defaults,
                     seed=seed + 42,
+                    qat="b8p4",
                     qat_rnd=sr,
                     qat_srn=srnumbits,
                 )

@@ -89,6 +89,7 @@ qat = ""  # quantization aware training dtype
 qat_rnd = "tne"  # rounding mode for QAT: tne, sr, srf, srff
 qat_srn = 8  # Number of SR bits
 qat_scale = 1.0
+qat_start_iter = 0
 seed = 1337  # random seed
 # -----------------------------------------------------------------------------
 config_keys = [
@@ -385,11 +386,11 @@ while True:
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
-    # downcast weights
+    # downcast weights to QAT dtype
     def should_quantize(p):
         return p.dim() >= 2
 
-    if qat:
+    if qat and iter_num >= qat_start_iter:
         with torch.no_grad():
             for p in model.parameters():
                 if should_quantize(p):
@@ -401,7 +402,6 @@ while True:
     )
     if do_eval and master_process:
         losses = estimate_loss()
-        awfutils.pt_print("model", model)
 
         # next: try e3m4
 

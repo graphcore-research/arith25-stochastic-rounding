@@ -22,9 +22,9 @@ python train.py config/train_shakespeare_char.py
 ```
 should run.
 
-Then, to train with quantization to binary8p4, using stochastic rounding:
+Then, to train with quantization to binary8p4, using stochastic rounding with three random bits (one fewer than the difference between bfloat16's precision of 8 and p4):
 ```
-python train.py config/train_shakespeare_char.py --qat=b8p4 --qat_rnd=sr
+python train.py config/train_shakespeare_char.py --qat=b8p4 --qat_rnd=sr --qat_srn=3
 ```
 
 # Running the paper's experiments
@@ -46,10 +46,10 @@ make -f sweeps/Makefile
 
 To regenerate figure 4, run
 ```
-python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=float16 --qat_rnd=tne
-python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --qat_rnd=tne
-python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=sr  # Called "SRC" in the paper
-python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=srf
-python train.py config/train_shakespeare_char.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=srff
+python train.py config/train_gpt2.py --dtype=bfloat16 --qat=float16 --qat_rnd=tne
+python train.py config/train_gpt2.py --dtype=bfloat16 --qat=b8p4 --qat_rnd=tne
+python train.py config/train_gpt2.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=sr --qat_scale=0.0 --qat_start_iter=
+python train.py config/train_gpt2.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=srf
+python train.py config/train_gpt2.py --dtype=bfloat16 --qat=b8p4 --qat_srn=3 --qat_rnd=srff
 ```
 

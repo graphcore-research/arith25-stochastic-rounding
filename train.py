@@ -345,6 +345,7 @@ if qat:
 
 
 @torch.compile(dynamic=True)
+@torch.no_grad()
 def round(v, scale=1.0):
     srbits = torch.randint(0, 2**qat_srn, size=v.size(), device=v.device)
     if scale == 0.0:
@@ -376,6 +377,7 @@ def round(v, scale=1.0):
 # training loop
 X, Y = get_batch("train")  # fetch the very first batch
 t0 = time.time()
+t00 = t0
 local_iter_num = 0  # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
 running_mfu = -1.0
@@ -394,7 +396,7 @@ while True:
         with torch.no_grad():
             for p in model.parameters():
                 if should_quantize(p):
-                    p.data = round(p.data, qat_scale)
+                    p.data = round(p.data.detach(), qat_scale)
 
     # evaluate the loss on train/val sets and write checkpoints
     do_eval = (iter_num % eval_interval == 0) or (
@@ -443,19 +445,22 @@ while True:
                 }
             )
 
-        if losses["val"] < best_val_loss or always_save_checkpoint:
-            best_val_loss = losses["val"]
-            if iter_num > 0:
-                checkpoint = {
-                    "model": raw_model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "model_args": model_args,
-                    "iter_num": iter_num,
-                    "best_val_loss": best_val_loss,
-                    "config": config,
-                }
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+        if False:
+            if losses["val"] < best_val_loss or always_save_checkpoint:
+                best_val_loss = losses["val"]
+                if iter_num > 0:
+                    checkpoint = {
+                        "model": raw_model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "model_args": model_args,
+                        "iter_num": iter_num,
+                        "best_val_loss": best_val_loss,
+                        "config": config,
+                    }
+                    print(f"saving checkpoint to {out_dir}")
+                    torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+                    del checkpoint  # awf does this fix memory leak?
+
     if iter_num == 0 and eval_only:
         break
 
@@ -499,8 +504,14 @@ while True:
         if local_iter_num >= 5:  # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+        mem = torch.cuda.mem_get_info()
+        dt00 = t1 - t00
         print(
-            f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%"
+            f"{int((dt00)//3600):02}:{int((dt00%3600)//60):02}:{int(dt00%60):02}",
+            f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms",
+            f"mfu {running_mfu*100:.2f}%",
+            f"{mem[0] / 1e9:.2f}GB free, {mem[1] / 1e9:.2f}GB total",
+            sep=", ",
         )
     iter_num += 1
     local_iter_num += 1

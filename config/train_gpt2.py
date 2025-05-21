@@ -4,7 +4,7 @@
 
 wandb_log = True
 wandb_project = "arith-sr"
-wandb_run_name = "gpt2"
+wandb_run_name = "gpt2d"
 
 n_layer = 24
 n_head = 16
@@ -18,15 +18,19 @@ gradient_accumulation_steps = 5 * 8
 
 # this makes total number of tokens be 300B
 max_iters = 30000
-lr_decay_iters = 30000
 
-learning_rate = 6e-4  # max learning rate
-min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+dtype = "bfloat16"
+qat_start_iter = 100
+
+decay_lr = False
+# lr_decay_iters = 60000
+learning_rate = 3e-4  # max learning rate
+# min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 
 # eval stuff
 eval_interval = 500
 eval_iters = 200
-log_interval = 10
+log_interval = 20
 
 # weight decay
 weight_decay = 1e-1
